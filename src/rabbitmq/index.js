@@ -1,7 +1,15 @@
+// start MongoDB with Mongoose
+const mongoose = require('mongoose');
+mongoose.Promise = require('bluebird'); // Use bluebird promises
+
+const crawlerModel = require('../models/crawlerModel');
+
 const _ = require('lodash');
 const topology = require("./topology.js");
 // insert configuration file
 const config = require('../../configuration.js')(process.env.NODE_ENV);
+
+mongoose.connect(config.mongodb.uri, config.mongodb.options);
 
 const levelup = require('level');
 var LvlDB = levelup(config.levelup.location, config.levelup.options, function (err, db) {
@@ -37,22 +45,46 @@ rabbit.on("failed", function (connection) {
 });
 rabbit.on("closed", function (connection) {
   console.log(`RabbitMQ connection closed (intentional) Event trigger for ${connection.name}`);
-  rabbit.retry(); // retry to connect
+  // rabbit.retry(); // retry to connect
 });
 
 const initTopology = function () {
-  return topology(rabbit)
-    .then(function () {
-      console.info('RabbitMQ connection started');
-    }).catch(function (err) {
-      console.error('RabbitMQ configuration failed', err);
-    });
+  return crawlerModel.find().then(function (docs) {
+
+    return topology(rabbit, docs)
+      .then(function () {
+        console.info('RabbitMQ connection started');
+      }).catch(function (err) {
+        console.error('RabbitMQ configuration failed', err);
+      });
+  }).catch(function (err) {
+    console.error('MongoDB crawlerModel search failed', err);
+  });
 }
 
 const publishCrawlerRequest = function (url, uniqueUrl, executionDoc) {
   return rabbit.publish("trackinops.crawler-request-router", {
     routingKey: 'crawler.' + executionDoc.crawlerCustomId + '.execution.' + executionDoc._id,
     type: 'crawler.' + executionDoc.crawlerCustomId + '.execution.' + executionDoc._id,
+    messageId: uniqueUrl,
+    body: {
+      url: url,
+      uniqueUrl: uniqueUrl,
+      executionDoc: executionDoc,
+      timestamp: Date.now()
+    },
+    timestamp: Date.now(),
+    expiresAfter: 1000 * 60 * 60 * 24 * 7 // 7 days
+  }, config.rabbit.connection.name)
+    .then(function () {
+      console.info('Published to RabbitMQ, execution._id =', executionDoc._id);
+    });
+}
+
+const publishParserRequest = function (url, uniqueUrl, executionDoc) {
+  return rabbit.publish("trackinops.crawler-parser-router", {
+    routingKey: 'parser.' + executionDoc.crawlerCustomId + '.execution.' + executionDoc._id,
+    type: 'parser.' + executionDoc.crawlerCustomId + '.execution.' + executionDoc._id,
     messageId: uniqueUrl,
     body: {
       url: url,
@@ -81,8 +113,8 @@ const publishCrawlerRequest = function (url, uniqueUrl, executionDoc) {
 
 const startRequeueSubscription = function () {
   rabbit.handle({
-    queue: 'crawler_queUrlList_requeue',
-    type: 'crawler_requeue'
+    queue: 'Requeue.crawler_queUrlList_requeue',
+    type: 'Requeue.crawler_requeue'
   }, function (msg) {
     console.info("Received:", msg.properties.messageId, "routingKey:", msg.fields.routingKey);
 
@@ -96,6 +128,10 @@ const startRequeueSubscription = function () {
       });
   });
 
+}
+
+function matchesRegex(string, regex) {
+  return (new RegExp(regex, 'i')).test(string);
 }
 
 function levelDBisOpen() {
@@ -145,7 +181,7 @@ function queUrlList(urlList, executionDoc) {
   return Promise.all(urlList.map(function (url) {
     // return isValidUrlByDNSHost(url)
     //   .then(function (url) {
-    return constructUniqueUrl(url, executionDoc.urlIncludeFragment, executionDoc.urlConstructor)
+    return constructUniqueUrl(url, executionDoc.urlConstructor.urlIncludeFragment, executionDoc.urlConstructor.remove)
       .then(function (uniqueUrl) {
         // How many links must download before fetching the next?
         // The queued, minus those running in parallel, plus one of 
@@ -157,6 +193,13 @@ function queUrlList(urlList, executionDoc) {
             // checking if the uniqueUrl haven't been already queued
             return levelDBkeyNotFound(uniqueUrl)
               .then(() => levelDBput(uniqueUrl, { executionId: executionDoc._id, timestamp: Date.now() }))
+              .then(() => {
+                if (matchesRegex(url, executionDoc.followLinks.parserUrlRegex)) {
+                  return Queue.publishParserRequest(url, uniqueUrl, executionDoc);
+                } else {
+                  return Promise.resolve();
+                }
+              })
               .then(() => Queue.publishCrawlerRequest(url, uniqueUrl, executionDoc))
               .then(() => {
                 console.info({
@@ -322,5 +365,6 @@ function constructUniqueUrl(url, fragmentEnabled = false, constructorRemove) {
 exports = module.exports = Queue = {
   initTopology: initTopology,
   publishCrawlerRequest: publishCrawlerRequest,
+  publishParserRequest: publishParserRequest,
   startRequeueSubscription: startRequeueSubscription
 };

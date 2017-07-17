@@ -31,4 +31,4 @@ node_modules
 .vscode
 
 # catalog for LevelDB
-DB
+DB/*/*
