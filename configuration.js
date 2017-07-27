@@ -47,6 +47,12 @@ const development = {
       keyEncoding: 'utf8',
       valueEncoding: 'json'
     }
+  },
+  nsq: {
+    server: '127.0.0.1',
+    wPort: 32769, // TCP nsqd Write Port, default: 4150
+    rPort: 32770, // HTTP nsqlookupd Read Port, default: 4161
+    lookupdHTTPAddresses: ['127.0.0.1:32770'] // HTTP default: '127.0.0.1:4161'
   }
 };
 const production = {
@@ -107,6 +113,12 @@ const production = {
       keyEncoding: 'utf8',
       valueEncoding: 'json'
     }
+  },
+  nsq: {
+    server: 'nsqd-inDocker',
+    wPort: 4150, // TCP nsqd Write Port, default: 4150
+    rPort: 4161, // HTTP nsqlookupd Read Port, default: 4161
+    lookupdHTTPAddresses: ['nsqlookupd:4161'] // HTTP default: '127.0.0.1:4161'
   }
 
 };
