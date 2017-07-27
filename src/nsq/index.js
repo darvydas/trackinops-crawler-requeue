@@ -19,7 +19,7 @@ NSQwriter.on('closed', function () {
 
 const NSQreader = new nsq.Reader('trackinops.crawler-requeue', 'Requeue_Url_List', {
   lookupdHTTPAddresses: config.nsq.lookupdHTTPAddresses,
-  nsqdTCPAddresses: ['localhost:32769']
+  nsqdTCPAddresses: config.nsq.nsqdTCPAddresses
 });
 NSQreader.connect();
 NSQreader.on('ready', function () {

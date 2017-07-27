@@ -27,7 +27,7 @@ const development = {
       name: 'trackinopsConnection',
       username: "trackinops",
       password: "trops", //"trackinops",
-      server: ["127.0.0.1"], //"93.115.26.183",//"rabbitmq", //["rabbitmq"],,
+      server: ["127.0.0.1"], //"rabbitmq", //["rabbitmq"],,
       port: 5672,
       VHost: "%2ftrackinops",
       timeout: 1000,
@@ -118,6 +118,7 @@ const production = {
     server: 'nsqd-inDocker',
     wPort: 4150, // TCP nsqd Write Port, default: 4150
     rPort: 4161, // HTTP nsqlookupd Read Port, default: 4161
+    nsqdTCPAddresses: [`nsqd-inDocker:4150`],
     lookupdHTTPAddresses: ['nsqlookupd:4161'] // HTTP default: '127.0.0.1:4161'
   }
 

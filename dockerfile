@@ -21,6 +21,9 @@ npm install
 # COPY . /usr/src/app/trackinops-crawler-requeue
 # RUN npm install
 
+# Copy configuration file from local source
+COPY ./configuration.js /usr/src/app/trackinops-crawler-requeue/configuration.js
+
 # Create app directory
 RUN mkdir -p /usr/src/app/trackinops-crawler-requeue
 RUN mkdir -p /usr/src/app/trackinops-crawler-requeue/DB
