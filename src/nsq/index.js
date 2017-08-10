@@ -103,6 +103,24 @@ const publishCrawlerRequest = function (url, uniqueUrl, executionDoc) {
   })
 }
 
+const publishToRequeueConcurrency = function (url, uniqueUrl, executionDoc) {
+  return new Promise(function (resolve, reject) {
+    NSQwriter.publish("trackinops.requeue-concurrency", {
+      url: url,
+      uniqueUrl: uniqueUrl,
+      executionDoc: executionDoc,
+      timestamp: Date.now()
+    }, function (err) {
+      if (err) {
+        console.error(`NSQwriter Requeue-concurrency publish Error: ${err.message}`);
+        return reject(err);
+      }
+      console.info(`Requeue-concurrency sent to NSQ, 150 chars: ${uniqueUrl.substring(0, 150)}`);
+      return resolve();
+    })
+  })
+}
+
 const publishParserRequest = function (url, uniqueUrl, executionDoc) {
   return new Promise(function (resolve, reject) {
     NSQwriter.publish("trackinops.crawler-parser", {
@@ -213,14 +231,14 @@ function queUrlList(urlList, executionDoc) {
             // checking if the uniqueUrl haven't been already queued
             return levelDBkeyNotFound(uniqueUrl)
               .then(() => levelDBput(uniqueUrl, { executionId: executionDoc._id, timestamp: Date.now() }))
-              .then(() => {
-                if (matchesRegex(url, executionDoc.followLinks.parserUrlRegex)) {
-                  return Queue.publishParserRequest(url, uniqueUrl, executionDoc);
-                } else {
-                  return Promise.resolve();
-                }
-              })
-              .then(() => Queue.publishCrawlerRequest(url, uniqueUrl, executionDoc))
+              // .then(() => {
+              //   if (matchesRegex(url, executionDoc.followLinks.parserUrlRegex)) {
+              //     return Queue.publishParserRequest(url, uniqueUrl, executionDoc);
+              //   } else {
+              //     return Promise.resolve();
+              //   }
+              // })
+              .then(() => Queue.publishToRequeueConcurrency(url, uniqueUrl, executionDoc))
               .then(() => {
                 console.info({
                   'status': 'resolved',
@@ -384,6 +402,7 @@ function constructUniqueUrl(url, fragmentEnabled = false, constructorRemove) {
 
 exports = module.exports = Queue = {
   publishCrawlerRequest: publishCrawlerRequest,
+  publishToRequeueConcurrency: publishToRequeueConcurrency,
   publishParserRequest: publishParserRequest,
   startRequeueSubscription: startRequeueSubscription
 };

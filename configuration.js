@@ -22,21 +22,6 @@ const development = {
       // config: { autoIndex: false } // calls ensureIndex on every index in a DB, slower restart, more reliable indexes
     }
   },
-  rabbit: {
-    connection: {
-      name: 'trackinopsConnection',
-      username: "trackinops",
-      password: "trops", //"trackinops",
-      server: ["127.0.0.1"], //"rabbitmq", //["rabbitmq"],,
-      port: 5672,
-      VHost: "%2ftrackinops",
-      timeout: 1000,
-      failAfter: 30,
-      retryLimit: 400
-    },
-    prefetchLimit: 4,
-    requePrefetchLimit: 2
-  },
   levelup: {
     location: './DB/levelDB',
     options: {
@@ -64,44 +49,7 @@ const production = {
     port: 27017,
     db: "trackinops",
     uri: "mongodb://mongod:27017/trackinops",
-    options: {
-      useMongoClient: true,
-      // user: "trackinops", // "trackinopsMongo",
-      // pass: "mong0", // "mng0trops",
-      // server: {
-      //   poolSize: 50,
-      //   reconnectTries: 90,
-      //   reconnectInterval: 1000, // ms
-      //   socketOptions: {
-      //     autoReconnect: true,
-      //     noDelay: true,
-      //     keepAlive: 5 * 60 * 1000,
-      //     connectTimeoutMS: 1.5 * 60 * 1000,
-      //     socketTimeoutMS: 3 * 60 * 1000
-      //   }
-      // },
-      // replset: {
-      //   ha: true, // Make sure the high availability checks are on,
-      //   haInterval: 5000, // Run every 5 seconds
-      //   socketOptions: { keepAlive: 300000, connectTimeoutMS: 30000, socketTimeoutMS: 90000 }
-      // },
-      // config: { autoIndex: true } // calls ensureIndex on every index in a DB, slower restart, more reliable indexes
-    }
-  },
-  rabbit: {
-    connection: {
-      name: 'trackinopsConnection',
-      username: "trackinops",
-      password: "trops",
-      server: "rabbitmq",
-      port: 5672,
-      VHost: "%2ftrackinops",
-      timeout: 1000,
-      failAfter: 30,
-      retryLimit: 400
-    },
-    prefetchLimit: 4,
-    requePrefetchLimit: 30
+    options: { useMongoClient: true }
   },
   levelup: {
     location: '/usr/src/app/trackinops-crawler-requeue/DB/levelDB',
@@ -115,11 +63,20 @@ const production = {
     }
   },
   nsq: {
-    server: 'nsqd-inDocker',
+    server: 'nsqd',
     wPort: 4150, // TCP nsqd Write Port, default: 4150
     rPort: 4161, // HTTP nsqlookupd Read Port, default: 4161
-    nsqdTCPAddresses: [`nsqd-inDocker:4150`],
-    lookupdHTTPAddresses: ['nsqlookupd:4161'] // HTTP default: '127.0.0.1:4161'
+    nsqdTCPAddresses: [`nsqd:4150`],
+    lookupdHTTPAddresses: ['nsqlookupd:4161'], // HTTP default: '127.0.0.1:4161'
+    readerOptions: {
+      maxInFlight: 1,
+      maxBackoffDuration: 60 * 60, // 1 hour
+      maxAttempts: 50,
+      requeueDelay: 90,
+      nsqdTCPAddresses: [`nsqd:4150`],
+      lookupdHTTPAddresses: ['nsqlookupd:4161'], // HTTP default: '127.0.0.1:4161'
+      messageTimeout: 60 * 1000 // 1 min
+    }
   }
 
 };
