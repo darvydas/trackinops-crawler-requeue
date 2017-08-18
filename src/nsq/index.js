@@ -17,7 +17,7 @@ NSQwriter.on('closed', function () {
   console.info('NSQ Writer closed Event');
 });
 
-const NSQreader = new nsq.Reader('trackinops.crawler-requeue', 'Requeue_Url_List', {
+const NSQreader = new nsq.Reader('trackinops.requeue-frontier', 'Execute_requeue', {
   lookupdHTTPAddresses: config.nsq.lookupdHTTPAddresses,
   nsqdTCPAddresses: config.nsq.nsqdTCPAddresses
 });
