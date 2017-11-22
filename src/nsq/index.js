@@ -32,15 +32,16 @@ NSQreader.on('closed', function () {
 const levelup = require('level');
 var LvlDB = levelup(config.levelup.location, config.levelup.options, function (err, db) {
   if (err) throw err
-  console.log(db.db.getProperty('leveldb.num-files-at-level0'));
-  console.log(db.db.getProperty('leveldb.stats'));
-  console.log(db.db.getProperty('leveldb.sstables'));
+  console.info(db.db.getProperty('leveldb.num-files-at-level0'));
+  console.info(db.db.getProperty('leveldb.stats'));
+  console.info(db.db.getProperty('leveldb.sstables'));
 });
 
 const _ = require('lodash');
 // const cheerio = require('cheerio');
 const Promise = require('bluebird');
 const URL = require('url');
+const URI = require('urijs');
 const dns = require('dns');
 
 // const CDP = require('chrome-remote-interface');
@@ -153,12 +154,27 @@ const publishParserRequest = function (url, uniqueUrl, executionDoc) {
 const startRequeueSubscription = function () {
   NSQreader.on('message', function (msg) {
     console.log(msg.json());
-    console.log('Received message [%s]: %s', msg.id, msg.json().publishedMessageId);
-    console.info(`Received: ${msg.id}, routingKey: msg.fields.routingKey`);
 
-    return queUrlList(msg.json().urlList, msg.json().executionDoc)
-      .then(function (queuedUrlList) {
-        // console.info(queuedUrlList);
+    if (msg.json().urlList.length < 3000)
+      return queUrlList(msg.json().urlList, msg.json().executionDoc)
+        .then(function (queuedUrlList) {
+          // console.info(queuedUrlList);
+          msg.finish();
+        }).catch(function (err) {
+          console.error(err);
+          msg.requeue(delay = null, backoff = true);
+        });
+
+    return Promise.all(
+      _.chunk(_.uniq(msg.json().urlList), 3000)
+        .map((linkChunk) => {
+          return queUrlList(linkChunk, msg.json().executionDoc)
+            .then(function (queuedUrlListChunk) {
+              return queuedUrlListChunk;
+            })
+        })
+    )
+      .then(function (combinedQueuedUrlList) {
         msg.finish();
       }).catch(function (err) {
         console.error(err);
@@ -215,19 +231,17 @@ function queUrlList(urlList, executionDoc) {
   //     console.info(executionDoc._id + ' already queued ' + alreadyQueuedCount);
 
   const queued = [];
-  const parallel = 5;
+  const parallel = 20;
   return Promise.all(urlList.map(function (url) {
-    // return isValidUrlByDNSHost(url)
-    //   .then(function (url) {
-    return constructUniqueUrl(url, executionDoc.urlConstructor.urlIncludeFragment, executionDoc.urlConstructor.remove)
-      .then(function (uniqueUrl) {
-        // How many links must download before fetching the next?
-        // The queued, minus those running in parallel, plus one of 
-        // the parallel slots.
-        let mustComplete = Math.max(0, queued.length - parallel + 1);
-        // when enough links are complete, queue another request for an item    
-        let download = Promise.some(queued, mustComplete)
-          .then(function () {
+    // How many links must download before fetching the next?
+    // The queued, minus those running in parallel, plus one of 
+    // the parallel slots.
+    let mustComplete = Math.max(0, queued.length - parallel + 1);
+    // when enough links are complete, queue another request for an item    
+    let download = Promise.some(queued, mustComplete)
+      .then(function () {
+        return constructUniqueUrl(url, executionDoc.urlConstructor.urlIncludeFragment, executionDoc.urlConstructor.remove)
+          .then(function (uniqueUrl) {
             // checking if the uniqueUrl haven't been already queued
             return levelDBkeyNotFound(uniqueUrl)
               .then(() => levelDBput(uniqueUrl, { executionId: executionDoc._id, timestamp: Date.now() }))
@@ -265,32 +279,31 @@ function queUrlList(urlList, executionDoc) {
                   'reason': err.message // when logging to file, include full err
                 };
               });
+          }).catch(function (err) {
+            // constructUniqueUrl failed 
+            // save failed erro information somewhere 
+            console.error(new Error('constructUniqueUrl ' + err));
+            // throw new Error('constructUniqueUrl ' + err);
+            return {
+              'status': 'rejected',
+              'execution': executionDoc._id,
+              'url': url,
+              'reason': err.message // when logging to file, include full err
+            };
           })
-          .catch(Promise.AggregateError, function (err) {
-            err.forEach(function (e) {
-              console.error(e.stack);
-            });
-            throw err;
-          });
-
-        queued.push(download);
-        return download.then(function (result) {
-          // after that new url is created    
-          return result;
+      })
+      .catch(Promise.AggregateError, function (err) {
+        err.forEach(function (e) {
+          console.error(e.stack);
         });
-      }).catch(function (err) {
-        // constructUniqueUrl failed 
-        // save failed erro information somewhere 
-        console.error(new Error('constructUniqueUrl ' + err));
-        throw new Error('constructUniqueUrl ' + err);
+        throw err;
       });
-    // }).catch(function (err) {
-    //   // isValidUrlByDNSHost failed
-    //   // save failed erro information somewhere 
-    //   console.error(err);
-    // });
-  }));
-  // })
+
+    queued.push(download);
+    return download.then(function (constructedUrl) {
+      return constructedUrl;
+    });
+  }))
 }
 function isValidUrlByDNSHost(url) {
   return new Promise(function (resolve, reject) {
@@ -334,70 +347,60 @@ const sortByKeys = object => {
 }
 
 function constructUniqueUrl(url, fragmentEnabled = false, constructorRemove) {
+  console.info(`Inserted url to Construct: ${url}`);
   return new Promise(function (resolve, reject) {
-    url = url.toLowerCase(); // whole url are converted to lower case
-    url = URL.parse(url, true); // 'true' - query will be object
-    if (url.host) {
+    let uri = new URI(url);
+    uri.normalize();
+
+    if (uri.is("url") === true && uri.is("urn") === false) {
+      console.info('= url && != urn');
+
+      console.info(`pathname before: ${uri.pathname()}`);
       // remove not wanted regex from pathname
       if (!_.isEmpty(constructorRemove.pathname)) {
         _.forEach(constructorRemove.pathname, function (pathnameRemoveRegex) {
-          return url.pathname = _.replace(url.pathname, new RegExp(pathnameRemoveRegex, 'i'), '')
+          return uri.pathname(_.replace(uri.pathname(), new RegExp(pathnameRemoveRegex, 'i'), ''));
         })
       }
+      console.info(`pathname after: ${uri.pathname()}`);
 
-      // removes trailing slash from pathname
-      if (_.endsWith(url.pathname, '/')) {
-        url.pathname = url.pathname.substring(0, url.pathname.length - 1);
-      }
-      // pathname value is trimmed of whitespaces
-      // url.pathname = _.trim(url.pathname, '%20'); // commented because trims all %,2,0 chars
-      url.pathname = _.trim(url.pathname, '+');
-      url.pathname = _.trim(url.pathname, ' ');
+      if (uri.search()) { // formatting url querystring
+        console.info('Has search');
 
-      if (url.search) { // formatting url querystring
-        let newQuery = url.query;
-        _.each(_.keys(newQuery), function (key) {
-          // query string values trimmed of whitespaces
-          // newQuery[key] = _.trim(newQuery[key], '%20'); // commented because trims all %,2,0 chars
-          newQuery[key] = _.trim(newQuery[key], '+');
-          newQuery[key] = _.trim(newQuery[key], ' ');
-
-          // query parameter is removed if it's pair name matches regex on constructorRemove.query
-          if (!_.isEmpty(constructorRemove.query)) {
-            _.forEach(constructorRemove.query, function (queryRemoveRegex) {
-              if ((new RegExp(queryRemoveRegex, 'i')).test(key)) {
-                return delete newQuery[key];
-              }
-            })
-          }
-        });
-        url.query = newQuery;
-        // deleting search parameter to include query into URL.format()
-        delete url.search;
-
+        console.info(`Search before: ${uri.search()}`);
+        // query parameter is removed if it's pair name matches on constructorRemove.query
+        if (!_.isEmpty(constructorRemove.query)) {
+          _.forEach(constructorRemove.query, function (queryRemoveRegex) {
+            uri.removeSearch(new RegExp(queryRemoveRegex, 'i'));
+          })
+        }
+        console.info(`Search after : ${uri.search()}`);
         // query parameters are sorted alphabetically
-        url.query = sortByKeys(url.query);
+        uri.search(sortByKeys(uri.search(true)));
+        console.info(`Search after sort: ${uri.search()}`);
       }
 
+      console.info(`Hash before: ${uri.hash()}`);
       // delete disabled url fragment
       if (!fragmentEnabled) {
-        delete url.hash;
+        uri.fragment("");
       } else {
-        // fragment or hash can also have strings that should be removed
-        if (url.hash && !_.isEmpty(constructorRemove.fragment)) {
+        // fragment or hash can also have regex that should be removed
+        if (uri.hash() && !_.isEmpty(constructorRemove.fragment)) {
           _.forEach(constructorRemove.fragment, function (fragmentRemoveRegex) {
-            return url.hash = _.replace(url.hash, new RegExp(fragmentRemoveRegex, 'i'), '')
+            return uri.hash(_.replace(uri.hash(), new RegExp(fragmentRemoveRegex, 'i'), ''))
           })
         }
       }
+      console.info(`Hash after: ${uri.hash()}`);
 
-      console.info('constructUniqueUrl ' + URL.format(url));
-      return resolve(URL.format(url));
+      console.info(`Constructed Unique Url ${uri.href()}`)
+      return resolve(uri.href());
     } else {
-      console.error(new Error(url.href + ' can not convert to uniqueUrl'));
-      return reject(new Error(url.href + ' can not convert to uniqueUrl'));
+      // console.error(new Error(`Can not convert to uniqueUrl (!= url, or = urn) ${uri.href()}`));
+      return reject(new Error(`Can not convert to uniqueUrl (!= url, or = urn) ${uri.href()}`));
     }
-  });
+  })
 }
 
 exports = module.exports = Queue = {
