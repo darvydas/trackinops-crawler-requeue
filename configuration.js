@@ -48,11 +48,11 @@ const production = {
     host: "mongod",
     port: 27017,
     db: "trackinops",
-    uri: "mongodb://mongod:27017/trackinops",
+    uri: "mongodb://mongod:27017/trackinops?authSource=admin",
     options: { useMongoClient: true }
   },
   levelup: {
-    location: '/usr/src/app/trackinops-crawler-requeue/DB/levelDB',
+    location: '/usr/src/app/trackinops-requeue-frontier/DB/levelDB',
     options: {
       createIfMissing: true,
       errorIfExists: false,

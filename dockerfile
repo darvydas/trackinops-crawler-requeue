@@ -30,4 +30,4 @@ RUN mkdir -p /usr/src/app/trackinops-requeue-frontier/DB
 WORKDIR /usr/src/app/trackinops-requeue-frontier
 
 # EXPOSE 3000
-CMD NODE_ENV=production node --max_old_space_size=4096 --max_new_space_size=4096 index.js
+CMD NODE_ENV=production node --max_old_space_size=4096 index.js
