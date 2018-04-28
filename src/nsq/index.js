@@ -1,12 +1,6 @@
 // insert configuration file
 const config = require('../../configuration.js')(process.env.NODE_ENV);
 
-// start MongoDB with Mongoose
-const mongoose = require('mongoose');
-mongoose.Promise = require('bluebird'); // Use bluebird promises
-const crawlerModel = require('../models/crawlerModel');
-mongoose.connect(config.mongodb.uri, config.mongodb.options);
-
 const nsq = require('nsqjs');
 const NSQwriter = new nsq.Writer(config.nsq.server, config.nsq.wPort);
 NSQwriter.connect();
@@ -30,12 +24,17 @@ NSQreader.on('closed', function () {
 });
 
 const levelup = require('level');
+const ttl = require('level-ttl');
+
 var LvlDB = levelup(config.levelup.location, config.levelup.options, function (err, db) {
   if (err) throw err
   console.info(db.db.getProperty('leveldb.num-files-at-level0'));
   console.info(db.db.getProperty('leveldb.stats'));
   console.info(db.db.getProperty('leveldb.sstables'));
 });
+LvlDB = ttl(LvlDB, { checkFrequency: 1000, defaultTTL: 15 * 60 * 1000 });
+
+
 
 const _ = require('lodash');
 // const cheerio = require('cheerio');
@@ -86,30 +85,14 @@ process.on('SIGINT', function () {
   process.exit(0);
 })
 
-const publishCrawlerRequest = function (url, uniqueUrl, executionDoc) {
-  return new Promise(function (resolve, reject) {
-    NSQwriter.publish("trackinops.crawler-request", {
-      url: url,
-      uniqueUrl: uniqueUrl,
-      executionDoc: executionDoc,
-      timestamp: Date.now()
-    }, function (err) {
-      if (err) {
-        console.error(`NSQwriter Crawler Request publish Error: ${err.message}`);
-        return reject(err);
-      }
-      console.info(`Crawler Request sent to NSQ, 150 chars: ${uniqueUrl.substring(0, 150)}`);
-      return resolve();
-    })
-  })
-}
-
-const publishToRequeueConcurrency = function (url, uniqueUrl, executionDoc) {
+const publishToRequeueConcurrency = function (url, uniqueUrl, website, msgIdStart, requestId) {
   return new Promise(function (resolve, reject) {
     NSQwriter.publish("trackinops.requeue-concurrency", {
       url: url,
       uniqueUrl: uniqueUrl,
-      executionDoc: executionDoc,
+      website: website,
+      sendTo: msgIdStart, // msgIdStart = Parser / Crawler
+      requestId: requestId,
       timestamp: Date.now()
     }, function (err) {
       if (err) {
@@ -122,23 +105,6 @@ const publishToRequeueConcurrency = function (url, uniqueUrl, executionDoc) {
   })
 }
 
-const publishParserRequest = function (url, uniqueUrl, executionDoc) {
-  return new Promise(function (resolve, reject) {
-    NSQwriter.publish("trackinops.crawler-parser", {
-      url: url,
-      uniqueUrl: uniqueUrl,
-      executionDoc: executionDoc,
-      timestamp: Date.now()
-    }, function (err) {
-      if (err) {
-        console.error(`NSQwriter Parser Request publish Error: ${err.message}`);
-        return reject(err);
-      }
-      console.info(`Parser Request sent to NSQ, 150 chars: ${uniqueUrl.substring(0, 150)}`);
-      return resolve();
-    })
-  })
-}
 /**
 * @public
 *  // @paramm {String} routingKey - where to requeue
@@ -150,25 +116,49 @@ const publishParserRequest = function (url, uniqueUrl, executionDoc) {
 */
 
 
+function messageIdStart(messageId) {
+  // _.split('Parser:https://www...', ':', 1);
+  // => ['Parser']
+  return _.split(messageId, ':', 1)[0];
+}
+
+// function messageIdStart(messageId) {
+//   return new Promise(function (resolve, reject) {
+
+//   })
+// }
 
 const startRequeueSubscription = function () {
   NSQreader.on('message', function (msg) {
     console.log(msg.json());
 
-    if (msg.json().urlList.length < 3000)
-      return queUrlList(msg.json().urlList, msg.json().executionDoc)
-        .then(function (queuedUrlList) {
-          // console.info(queuedUrlList);
-          msg.finish();
-        }).catch(function (err) {
-          console.error(err);
-          msg.requeue(delay = null, backoff = true);
-        });
+    let msgIdStart = messageIdStart(msg.json().publishedMessageId);
+    let urlConstructor = {};
+    switch (msgIdStart) {
+      case 'Parser':
+        urlConstructor = msg.json().website.parserSettings.uniqueUrlConstructor
+        break;
+      case 'Crawler':
+        // do something to extract running crawler url constructor
+        break;
+    }
+
+
+    // if (msg.json().urlList.length < 3000)
+    //   return queUrlList(msg.json().urlList, msg.json().executionDoc)
+    //     .then(function (queuedUrlList) {
+    //       // console.info(queuedUrlList);
+    //       msg.finish();
+    //     }).catch(function (err) {
+    //       console.error(err);
+    //       msg.requeue(delay = null, backoff = true);
+    //     });
 
     return Promise.all(
-      _.chunk(_.uniq(msg.json().urlList), 3000)
+      _.chunk(_.uniq(msg.json().urlList), 1000)
         .map((linkChunk) => {
-          return queUrlList(linkChunk, msg.json().executionDoc)
+          return queUrlList(linkChunk, urlConstructor, msgIdStart, msg.json().website, msg.json().requestId)
+            // return queUrlList(linkChunk, msg.json().executionDoc)
             .then(function (queuedUrlListChunk) {
               return queuedUrlListChunk;
             })
@@ -180,6 +170,8 @@ const startRequeueSubscription = function () {
         console.error(err);
         msg.requeue(delay = null, backoff = true);
       });
+
+
   });
 }
 
@@ -201,9 +193,9 @@ function levelDBput(key, value) {
   })
 }
 
-function levelDBkeyNotFound(key) {
+function levelDBkeyNotFound(keyStart, key) {
   return new Promise(function (resolve, reject) {
-    LvlDB.get(key, { fillCache: true, asBuffer: true }, function (err, value) {
+    LvlDB.get(`${keyStart}:${key}`, { fillCache: true, asBuffer: true }, function (err, value) {
       if (err) {
         if (err.notFound) {
           // handle a 'NotFoundError' here
@@ -211,10 +203,10 @@ function levelDBkeyNotFound(key) {
         }
         // I/O or other error, pass it up the callback chain
         // return callback(err)
-        reject(new Error(`LevelDB key: ${key}, keyNotFound error: ${err}`));
+        reject(new Error(`LevelDB key: ${keyStart}:${key}, keyNotFound error: ${err}`));
       }
       // .. handle `value` here
-      reject(new Error(`LevelDB key already found: ${key}`));
+      reject(new Error(`LevelDB key already found: ${keyStart}:${key}`));
     })
   })
 }
@@ -222,8 +214,8 @@ function levelDBkeyNotFound(key) {
 function levelDBdel() {
 
 }
-
-function queUrlList(urlList, executionDoc) {
+// linkChunk, msg.json().website, urlConstructor, msgIdStart
+function queUrlList(urlList, urlConstructor, msgIdStart, website, requestId) {
   // TODO: pre-check links if they are loadable (correct url; not 301; etc.), CACELED: saving links on error, so checking works on the processor itself
 
   // return requestModel.reachedMaxCrawledPagesLimit(executionDoc._id, executionDoc.maxCrawledPages)
@@ -240,11 +232,12 @@ function queUrlList(urlList, executionDoc) {
     // when enough links are complete, queue another request for an item    
     let download = Promise.some(queued, mustComplete)
       .then(function () {
-        return constructUniqueUrl(url, executionDoc.urlConstructor.urlIncludeFragment, executionDoc.urlConstructor.remove)
+        return constructUniqueUrl(url, urlConstructor.urlIncludeFragment, urlConstructor.remove)
           .then(function (uniqueUrl) {
             // checking if the uniqueUrl haven't been already queued
-            return levelDBkeyNotFound(uniqueUrl)
-              .then(() => levelDBput(uniqueUrl, { executionId: executionDoc._id, timestamp: Date.now() }))
+            return levelDBkeyNotFound(msgIdStart, uniqueUrl)
+              .then(() => levelDBput(`${msgIdStart}:${uniqueUrl}`,
+                { websiteId: website._id, requestId: requestId, timestamp: Date.now() }))
               // .then(() => {
               //   if (matchesRegex(url, executionDoc.followLinks.parserUrlRegex)) {
               //     return Queue.publishParserRequest(url, uniqueUrl, executionDoc);
@@ -252,30 +245,38 @@ function queUrlList(urlList, executionDoc) {
               //     return Promise.resolve();
               //   }
               // })
-              .then(() => Queue.publishToRequeueConcurrency(url, uniqueUrl, executionDoc))
+              .then(() => Queue.publishToRequeueConcurrency(url, uniqueUrl, website, msgIdStart, requestId))
               .then(() => {
                 console.info({
                   'status': 'resolved',
-                  'execution': executionDoc._id,
-                  'uniqueUrl': uniqueUrl
+                  'website': website._id,
+                  'uniqueUrl': uniqueUrl,
+                  'msgIdStart': msgIdStart,
+                  'requestId': requestId
                 });
                 return {
                   'status': 'resolved',
-                  'execution': executionDoc._id,
-                  'uniqueUrl': uniqueUrl
+                  'website': website._id,
+                  'uniqueUrl': uniqueUrl,
+                  'msgIdStart': msgIdStart,
+                  'requestId': requestId
                 };
               })
               .catch(function (err) {
                 console.info({
-                  'status': 'rejected',
-                  'execution': executionDoc._id,
+                  'status': 'resolved',
+                  'website': website._id,
                   'uniqueUrl': uniqueUrl,
+                  'msgIdStart': msgIdStart,
+                  'requestId': requestId,
                   'reason': err.message // when logging to file, include full err
                 });
                 return {
-                  'status': 'rejected',
-                  'execution': executionDoc._id,
+                  'status': 'resolved',
+                  'website': website._id,
                   'uniqueUrl': uniqueUrl,
+                  'msgIdStart': msgIdStart,
+                  'requestId': requestId,
                   'reason': err.message // when logging to file, include full err
                 };
               });
@@ -286,8 +287,10 @@ function queUrlList(urlList, executionDoc) {
             // throw new Error('constructUniqueUrl ' + err);
             return {
               'status': 'rejected',
-              'execution': executionDoc._id,
+              'website': website._id,
               'url': url,
+              'msgIdStart': msgIdStart,
+              'requestId': requestId,
               'reason': err.message // when logging to file, include full err
             };
           })
@@ -305,6 +308,8 @@ function queUrlList(urlList, executionDoc) {
     });
   }))
 }
+
+// not used any more
 function isValidUrlByDNSHost(url) {
   return new Promise(function (resolve, reject) {
     host = URL.parse(url, true).host; // https://nodejs.org/api/url.html#url_url_parse_urlstring_parsequerystring_slashesdenotehost
@@ -404,8 +409,6 @@ function constructUniqueUrl(url, fragmentEnabled = false, constructorRemove) {
 }
 
 exports = module.exports = Queue = {
-  publishCrawlerRequest: publishCrawlerRequest,
   publishToRequeueConcurrency: publishToRequeueConcurrency,
-  publishParserRequest: publishParserRequest,
   startRequeueSubscription: startRequeueSubscription
 };

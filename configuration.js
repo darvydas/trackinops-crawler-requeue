@@ -4,31 +4,13 @@ const development = {
   web: {
     port: process.env.WEB_PORT || 3000
   },
-  mongodb: {
-    host: "localhost",
-    port: 27017,
-    db: "trackinops",
-    uri: "mongodb://localhost:27017/trackinops",
-    // username: "",
-    // password: "",
-    options: {
-      useMongoClient: true,
-      // server: { socketOptions: { keepAlive: 300000, connectTimeoutMS: 30000 } },
-      // replset: {
-      //   ha: true, // Make sure the high availability checks are on,
-      //   haInterval: 5000, // Run every 5 seconds
-      //   socketOptions: { keepAlive: 300000, connectTimeoutMS: 30000, socketTimeoutMS: 90000 }
-      // },
-      // config: { autoIndex: false } // calls ensureIndex on every index in a DB, slower restart, more reliable indexes
-    }
-  },
   levelup: {
     location: './DB/levelDB',
     options: {
       createIfMissing: true,
       errorIfExists: false,
       compression: true,
-      cacheSize: 100 * 8 * 1024 * 1024,
+      cacheSize: 8 * 1024 * 1024 * 1024,
       keyEncoding: 'utf8',
       valueEncoding: 'json'
     }
@@ -43,13 +25,6 @@ const development = {
 const production = {
   web: {
     port: process.env.WEB_PORT || 3000
-  },
-  mongodb: {
-    host: "mongod",
-    port: 27017,
-    db: "trackinops",
-    uri: "mongodb://mongod:27017/trackinops?authSource=admin",
-    options: { useMongoClient: true }
   },
   levelup: {
     location: '/usr/src/app/trackinops-requeue-frontier/DB/levelDB',
